@@ -12,7 +12,7 @@ from worldmap import WorldMap
 TAU = 2 * math.pi
 
 # ---- strategy knobs (variants differ only here) ----
-VARIANT = "D"
+VARIANT = "F"
 PRESETS = {
     # balanced: chase enemies we can't see, retreat at 42%
     "A": dict(retreat_hp=0.42, crowd_retreat=True, resume_hp=0.8, no_los="chase", chase_hp=0.5,
@@ -26,6 +26,12 @@ PRESETS = {
     # D + never retreat, fight even closer
     "E": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
               want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True),
+    # D + fighting skill: focus fire, grab cubes/weapons mid-fight, save energy for lightning
+    "F": dict(retreat_hp=0.25, crowd_retreat=False, resume_hp=0.65, no_los="chase", chase_hp=0.3,
+              want_gun=55, want_gun_vs_laser=40, want_laser=70, farm_hp=0.45, seek=True, skill=True),
+    # E + fighting skill
+    "G": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
+              want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True, skill=True),
     # ambusher: hold still behind cover when the enemy has no line of sight, retreat early
     "C": dict(retreat_hp=0.5, crowd_retreat=True, resume_hp=0.85, no_los="hold", chase_hp=0.7,
               want_gun=75, want_gun_vs_laser=55, want_laser=95, farm_hp=0.6),
@@ -99,6 +105,7 @@ class Bot:
         self.goal_item = None
         self.prev_pos = None
         self.hold_since = 0.0
+        self.last_target = None
 
     def lob_ready(self, kinds, weapons):
         return "mortar" in kinds and weapons[kinds.index("mortar")]["cooldown"] <= 0.3
@@ -349,9 +356,14 @@ class Bot:
             c = (p[0], p[1], p[2] + 4.5)
             l = d < 300 and self.los(muzzle, c)
             hp = m.get("hp", 1400)
-            s = d * 1.0 + hp * 0.06 + (0 if l else 250)
+            if P.get("skill"):
+                s = d * 1.0 + hp * 0.12 + (0 if l else 250) - (40 if m["id"] == self.last_target else 0)
+            else:
+                s = d * 1.0 + hp * 0.06 + (0 if l else 250)
             if s < bs:
                 best, bs, blos = m, s, l
+        if best is not None:
+            self.last_target = best["id"]
         return best, blos
 
     def farm_target(self, obs, xy, muzzle, npcs, enemies, hp_frac):
@@ -499,14 +511,38 @@ class Bot:
                 self.strafe_sign = -self.strafe_sign
                 px, py = -px, -py
                 mx, my = px + ux * radial, py + uy * radial
+        if P.get("skill"):
+            grab = self.fight_grab(obs, me, xy)
+            if grab is not None:
+                gx, gy = unit(grab[0] - xy[0], grab[1] - xy[1])
+                mx, my = mx * 0.4 + gx, my * 0.4 + gy
         mx, my = unit(mx, my)
         e = me["energy"]
+        lo, hi = (40, 75) if (P.get("skill") and "lightning" in has) else (20, 55)
         if self.boosting:
-            if e < 20:
+            if e < lo:
                 self.boosting = False
-        elif e > 55:
+        elif e > hi:
             self.boosting = True
         return (mx, my), self.boosting
+
+    def fight_grab(self, obs, me, xy):
+        best, bd = None, 1e9
+        myz = me["pos"][2]
+        for c in obs["cubes"]:
+            d = dist2(xy, c["pos"])
+            if d < 30 and d < bd and abs(c["pos"][2] - myz) < 4 and self.in_circle(c["pos"], obs, 5):
+                best, bd = c["pos"], d
+        kinds = [w["kind"] if w else None for w in me["weapons"]]
+        held = [WEAPON_VALUE.get(k, 0) if k else -1 for k in kinds]
+        for pk in obs["pickups"]:
+            if pk["kind"] in kinds:
+                continue
+            gain = WEAPON_VALUE.get(pk["kind"], 0) - min(held)
+            d = dist2(xy, pk["pos"])
+            if gain > 0.3 and d < 35 and d - 15 < bd and abs(pk["pos"][2] - myz) < 4:
+                best, bd = pk["pos"], d - 15
+        return best
 
     def follow(self, xy, goal, t, t0):
         m = self.map
@@ -755,7 +791,7 @@ class Bot:
             else:
                 slot = 0 if held_vals[0] <= held_vals[1] else 1
                 w = me["weapons"][slot]
-                if v - held_vals[slot] <= 0.3 or near_enemy < 60:
+                if v - held_vals[slot] <= 0.3 or near_enemy < (25 if P.get("skill") else 60):
                     continue
                 if w and w["kind"] == "laser" and w.get("charge", 0) > 0:
                     continue
