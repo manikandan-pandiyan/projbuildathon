@@ -12,7 +12,7 @@ from worldmap import WorldMap
 TAU = 2 * math.pi
 
 # ---- strategy knobs (variants differ only here) ----
-VARIANT = "R"
+VARIANT = "S"
 PRESETS = {
     # balanced: chase enemies we can't see, retreat at 42%
     "A": dict(retreat_hp=0.42, crowd_retreat=True, resume_hp=0.8, no_los="chase", chase_hp=0.5,
@@ -69,6 +69,10 @@ PRESETS = {
     "R": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
               want_gun=40, want_gun_vs_laser=30, want_laser=130, farm_hp=0.4, seek=True, skill=True,
               laserfix=True, laser_range=True),
+    # L in practice; switches to placement play once it sees mechs dying in fights it isn't part of
+    "S": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
+              want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True, skill=True,
+              laserfix=True, adaptive=True),
     # E + fighting skill
     "G": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
               want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True, skill=True),
@@ -76,7 +80,10 @@ PRESETS = {
     "C": dict(retreat_hp=0.5, crowd_retreat=True, resume_hp=0.85, no_los="hold", chase_hp=0.7,
               want_gun=75, want_gun_vs_laser=55, want_laser=95, farm_hp=0.6),
 }
-P = PRESETS[VARIANT]
+P = dict(PRESETS[VARIANT])
+# free-for-all overrides, applied once the bot detects other mechs killing each other
+FFA = dict(retreat_hp=0.5, crowd_retreat=True, resume_hp=0.85, no_los="hold", chase_hp=0.7, seek=False,
+           want_gun=70, want_gun_vs_laser=60, want_laser=110, farm_hp=0.55)
 if P.get("lightning_first"):
     WEAPON_VALUE = {"lightning": 3.3, "laser": 3.0, "gun": 2.0, "mortar": 1.2}
 WEAPON_VALUE = {"laser": 3.0, "lightning": 2.6, "gun": 2.0, "mortar": 1.2}
@@ -148,6 +155,9 @@ class Bot:
         self.prev_pos = None
         self.hold_since = 0.0
         self.last_target = None
+        self.my_kills = 0
+        self.ffa = False
+        self.attackers = {}
 
     def lob_ready(self, kinds, weapons):
         return "mortar" in kinds and weapons[kinds.index("mortar")]["cooldown"] <= 0.3
@@ -206,6 +216,7 @@ class Bot:
                         self.threat_t = t
             elif typ == "kill":
                 self.dead.add(ev["target"])
+                self.my_kills += 1
                 self.known.pop(ev["target"], None)
             elif typ == "take_failed":
                 self.bad_targets[ev["id"]] = t + 10
@@ -261,6 +272,25 @@ class Bot:
         # ---- choose target (enemy mech)
         target, tlos = self.choose_target(enemies, muzzle, xy)
 
+        # ---- free-for-all detection: mechs dying that we didn't kill
+        for ev in obs["events"]:
+            if ev.get("type") == "damaged" and ev.get("by") is not None:
+                self.attackers[ev["by"]] = t
+        if P.get("adaptive") and not self.ffa and t < 240:
+            others_dead = 15 - (obs["alive"] - 1)
+            if others_dead - self.my_kills >= 2:
+                self.ffa = True
+                P.update(FFA)
+                mf.log(f"FFA detected at t={t:.0f}: {others_dead} dead, {self.my_kills} ours")
+        avoid = False
+        if self.ffa and target is not None:
+            d_t = dist2(xy, target["pos"])
+            weak = target.get("hp", 1400) < 0.45 * target.get("max_hp", 1400)
+            hostile = t - self.attackers.get(target["id"], -99) < 5
+            late = obs["alive"] <= 4
+            if not (weak or hostile or late or d_t < 45):
+                avoid = True
+
         # ---- decide mode
         n_close = sum(1 for m in enemies if dist2(xy, m["pos"]) < 160)
         recent_hit = t - self.last_damage_t < 3
@@ -302,6 +332,10 @@ class Bot:
                 zx, zy = unit(c[0] - xy[0], c[1] - xy[1])
                 goal = (xy[0] + (ux + 0.5 * zx) * 40, xy[1] + (uy + 0.5 * zy) * 40)
             boost = me["energy"] > 25 and hp_frac < 0.5
+        elif avoid:
+            self.mode = "avoid"
+            cv = self.find_cover(obs, xy, threats, t)
+            goal = cv if cv else (zone_pt or self.roam_point(obs, xy, t))
         elif target is not None and not tlos and not self.lob_ready(kinds, weapons):
             # we know where it is but can't shoot it
             if P["no_los"] == "hold" and t - self.hold_since < 6:
