@@ -12,7 +12,7 @@ from worldmap import WorldMap
 TAU = 2 * math.pi
 
 # ---- strategy knobs (variants differ only here) ----
-VARIANT = "I"
+VARIANT = "J"
 PRESETS = {
     # balanced: chase enemies we can't see, retreat at 42%
     "A": dict(retreat_hp=0.42, crowd_retreat=True, resume_hp=0.8, no_los="chase", chase_hp=0.5,
@@ -37,6 +37,10 @@ PRESETS = {
     "I": dict(retreat_hp=0.25, crowd_retreat=False, resume_hp=0.65, no_los="chase", chase_hp=0.3,
               want_gun=55, want_gun_vs_laser=40, want_laser=70, farm_hp=0.45, seek=True, skill=True,
               focus=0.22, offense=True),
+    # F + duck behind nearby cover while every weapon is reloading / cooling down
+    "J": dict(retreat_hp=0.25, crowd_retreat=False, resume_hp=0.65, no_los="chase", chase_hp=0.3,
+              want_gun=55, want_gun_vs_laser=40, want_laser=70, farm_hp=0.45, seek=True, skill=True,
+              peek=True),
     # E + fighting skill
     "G": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
               want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True, skill=True),
@@ -291,7 +295,19 @@ class Bot:
         if self.mode != "ambush":
             self.hold_since = t
         # ---- movement
-        if strafe and target is not None:
+        ducking = False
+        if strafe and target is not None and P.get("peek") and self.weapons_down(me, xy, target):
+            cv = self.find_cover(obs, xy, [m["pos"] for m in enemies], t, max_r=26)
+            if cv is not None:
+                ducking = True
+                self.mode = "duck"
+                move = self.follow(xy, cv, t, t0)
+                if dist2(xy, cv) < 2.5:
+                    move = (0.0, 0.0)
+                boost = me["energy"] > 30
+        if ducking:
+            pass
+        elif strafe and target is not None:
             move, boost = self.fight_move(obs, me, xy, target, has, t)
         elif goal is not None:
             move = self.follow(xy, goal, t, t0)
@@ -653,7 +669,30 @@ class Bot:
         # npc / gun bullets heading straight at us: sidestep
         return None
 
-    def find_cover(self, obs, xy, threats, t):
+    def weapons_down(self, me, xy, target):
+        """True when nothing we hold can hurt the target for at least ~0.8 s."""
+        d = dist2(xy, target["pos"])
+        any_w = False
+        for w in me["weapons"]:
+            if not w:
+                continue
+            any_w = True
+            k = w["kind"]
+            if k == "gun":
+                if w.get("reload", 0) < 0.8 and w.get("ammo", 1) > 0:
+                    return False
+            elif k == "laser":
+                if w["cooldown"] < 0.8 or w.get("charge", 0) > 0:
+                    return False
+            elif k == "lightning":
+                if d < w["stats"]["range"] and me["energy"] > 10:
+                    return False
+            elif k == "mortar":
+                if w["cooldown"] < 0.8 and 25 < d < 220:
+                    return False
+        return any_w
+
+    def find_cover(self, obs, xy, threats, t, max_r=58):
         if self.map is None or not threats:
             return None
         if self.cover is not None and t - self.cover_t < 0.8:
@@ -661,7 +700,7 @@ class Bot:
         m = self.map
         best, bs = None, 1e18
         tp = [(p[0], p[1], p[2] + 8) for p in threats[:6]]
-        for r in (14, 26, 40, 58):
+        for r in [r for r in (14, 26, 40, 58) if r <= max_r]:
             for k in range(14):
                 a = k * TAU / 14 + r * 0.1
                 x, y = xy[0] + math.cos(a) * r, xy[1] + math.sin(a) * r
