@@ -12,7 +12,7 @@ from worldmap import WorldMap
 TAU = 2 * math.pi
 
 # ---- strategy knobs (variants differ only here) ----
-VARIANT = "M"
+VARIANT = "N"
 PRESETS = {
     # balanced: chase enemies we can't see, retreat at 42%
     "A": dict(retreat_hp=0.42, crowd_retreat=True, resume_hp=0.8, no_los="chase", chase_hp=0.5,
@@ -53,6 +53,10 @@ PRESETS = {
     "M": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
               want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True, skill=True,
               laserfix=True, lightning_first=True),
+    # L + shoot at the upper body when only that is visible
+    "N": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
+              want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True, skill=True,
+              laserfix=True, upper=True),
     # E + fighting skill
     "G": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
               want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True, skill=True),
@@ -357,7 +361,7 @@ class Bot:
                 lw = weapons[kinds.index("laser")]
                 if lw.get("charge", 0) >= lw["stats"]["charge"] * 0.75:
                     p_, v_ = target["pos"], target.get("vel", [0, 0, 0])
-                    tx, ty, tz = p_[0] + v_[0] * 0.05, p_[1] + v_[1] * 0.05, p_[2] + 4.5
+                    tx, ty, tz = p_[0] + v_[0] * 0.05, p_[1] + v_[1] * 0.05, p_[2] + target.get("zoff", 4.5)
                     aim = (math.atan2(ty - muzzle[1], tx - muzzle[0]),
                            math.atan2(tz - muzzle[2], max(1e-3, math.hypot(tx - muzzle[0], ty - muzzle[1]))))
             mi = kinds.index("mortar") if "mortar" in kinds else -1
@@ -404,6 +408,14 @@ class Bot:
             d = dist2(xy, p)
             c = (p[0], p[1], p[2] + 4.5)
             l = d < 300 and self.los(muzzle, c)
+            if P.get("upper"):
+                m.pop("zoff", None)
+                if not l and d < 300:
+                    for zo in (7.0, 2.0):
+                        if self.los(muzzle, (p[0], p[1], p[2] + zo)):
+                            m["zoff"] = zo
+                            l = True
+                            break
             hp = m.get("hp", 1400)
             if P.get("skill"):
                 s = d * 1.0 + hp * P.get("focus", 0.12) + (0 if l else 250) - (40 if m["id"] == self.last_target else 0)
