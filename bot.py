@@ -12,7 +12,7 @@ from worldmap import WorldMap
 TAU = 2 * math.pi
 
 # ---- strategy knobs (variants differ only here) ----
-VARIANT = "K"
+VARIANT = "G"
 PRESETS = {
     # balanced: chase enemies we can't see, retreat at 42%
     "A": dict(retreat_hp=0.42, crowd_retreat=True, resume_hp=0.8, no_los="chase", chase_hp=0.5,
@@ -29,22 +29,6 @@ PRESETS = {
     # D + fighting skill: focus fire, grab cubes/weapons mid-fight, save energy for lightning
     "F": dict(retreat_hp=0.25, crowd_retreat=False, resume_hp=0.65, no_los="chase", chase_hp=0.3,
               want_gun=55, want_gun_vs_laser=40, want_laser=70, farm_hp=0.45, seek=True, skill=True),
-    # F + loot harder: wider cube grabbing in fights, farm drones/crates from further and at lower HP
-    "H": dict(retreat_hp=0.25, crowd_retreat=False, resume_hp=0.65, no_los="chase", chase_hp=0.3,
-              want_gun=55, want_gun_vs_laser=40, want_laser=70, farm_hp=0.35, seek=True, skill=True,
-              grab_r=50, loot_r=260, npc_hp=0.45),
-    # F + offense: stronger focus fire, damage upgrades first
-    "I": dict(retreat_hp=0.25, crowd_retreat=False, resume_hp=0.65, no_los="chase", chase_hp=0.3,
-              want_gun=55, want_gun_vs_laser=40, want_laser=70, farm_hp=0.45, seek=True, skill=True,
-              focus=0.22, offense=True),
-    # F + duck behind nearby cover while every weapon is reloading / cooling down
-    "J": dict(retreat_hp=0.25, crowd_retreat=False, resume_hp=0.65, no_los="chase", chase_hp=0.3,
-              want_gun=55, want_gun_vs_laser=40, want_laser=70, farm_hp=0.45, seek=True, skill=True,
-              peek=True),
-    # G + defense-first upgrades
-    "K": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
-              want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True, skill=True,
-              defense=True),
     # E + fighting skill
     "G": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
               want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True, skill=True),
@@ -195,10 +179,6 @@ class Bot:
             best, bi = -1e9, 0
             for i, ch in enumerate(off["choices"]):
                 v = UPGRADE_PRIORITY.get(ch["id"], 1)
-                if P.get("defense"):
-                    v = {"plating": 20, "armor": 19, "nanites": 18, "servos": 12}.get(ch["id"], v)
-                if P.get("offense") and ch["id"] in ("gun_rate", "gun_damage", "laser_charge", "laser_damage", "lightning_efficiency"):
-                    v += 4
                 if ch["id"].startswith(("laser", "lightning", "mortar", "gun")):
                     k = ch["id"].split("_")[0]
                     if k not in held:
@@ -301,19 +281,7 @@ class Bot:
         if self.mode != "ambush":
             self.hold_since = t
         # ---- movement
-        ducking = False
-        if strafe and target is not None and P.get("peek") and self.weapons_down(me, xy, target):
-            cv = self.find_cover(obs, xy, [m["pos"] for m in enemies], t, max_r=26)
-            if cv is not None:
-                ducking = True
-                self.mode = "duck"
-                move = self.follow(xy, cv, t, t0)
-                if dist2(xy, cv) < 2.5:
-                    move = (0.0, 0.0)
-                boost = me["energy"] > 30
-        if ducking:
-            pass
-        elif strafe and target is not None:
+        if strafe and target is not None:
             move, boost = self.fight_move(obs, me, xy, target, has, t)
         elif goal is not None:
             move = self.follow(xy, goal, t, t0)
@@ -389,7 +357,7 @@ class Bot:
             l = d < 300 and self.los(muzzle, c)
             hp = m.get("hp", 1400)
             if P.get("skill"):
-                s = d * 1.0 + hp * P.get("focus", 0.12) + (0 if l else 250) - (40 if m["id"] == self.last_target else 0)
+                s = d * 1.0 + hp * 0.12 + (0 if l else 250) - (40 if m["id"] == self.last_target else 0)
             else:
                 s = d * 1.0 + hp * 0.06 + (0 if l else 250)
             if s < bs:
@@ -563,7 +531,7 @@ class Bot:
         myz = me["pos"][2]
         for c in obs["cubes"]:
             d = dist2(xy, c["pos"])
-            if d < P.get("grab_r", 30) and d < bd and abs(c["pos"][2] - myz) < 4 and self.in_circle(c["pos"], obs, 5):
+            if d < 30 and d < bd and abs(c["pos"][2] - myz) < 4 and self.in_circle(c["pos"], obs, 5):
                 best, bd = c["pos"], d
         kinds = [w["kind"] if w else None for w in me["weapons"]]
         held = [WEAPON_VALUE.get(k, 0) if k else -1 for k in kinds]
@@ -572,7 +540,7 @@ class Bot:
                 continue
             gain = WEAPON_VALUE.get(pk["kind"], 0) - min(held)
             d = dist2(xy, pk["pos"])
-            if gain > 0.3 and d < P.get("grab_r", 30) + 5 and d - 15 < bd and abs(pk["pos"][2] - myz) < 4:
+            if gain > 0.3 and d < 35 and d - 15 < bd and abs(pk["pos"][2] - myz) < 4:
                 best, bd = pk["pos"], d - 15
         return best
 
@@ -675,30 +643,7 @@ class Bot:
         # npc / gun bullets heading straight at us: sidestep
         return None
 
-    def weapons_down(self, me, xy, target):
-        """True when nothing we hold can hurt the target for at least ~0.8 s."""
-        d = dist2(xy, target["pos"])
-        any_w = False
-        for w in me["weapons"]:
-            if not w:
-                continue
-            any_w = True
-            k = w["kind"]
-            if k == "gun":
-                if w.get("reload", 0) < 0.8 and w.get("ammo", 1) > 0:
-                    return False
-            elif k == "laser":
-                if w["cooldown"] < 0.8 or w.get("charge", 0) > 0:
-                    return False
-            elif k == "lightning":
-                if d < w["stats"]["range"] and me["energy"] > 10:
-                    return False
-            elif k == "mortar":
-                if w["cooldown"] < 0.8 and 25 < d < 220:
-                    return False
-        return any_w
-
-    def find_cover(self, obs, xy, threats, t, max_r=58):
+    def find_cover(self, obs, xy, threats, t):
         if self.map is None or not threats:
             return None
         if self.cover is not None and t - self.cover_t < 0.8:
@@ -706,7 +651,7 @@ class Bot:
         m = self.map
         best, bs = None, 1e18
         tp = [(p[0], p[1], p[2] + 8) for p in threats[:6]]
-        for r in [r for r in (14, 26, 40, 58) if r <= max_r]:
+        for r in (14, 26, 40, 58):
             for k in range(14):
                 a = k * TAU / 14 + r * 0.1
                 x, y = xy[0] + math.cos(a) * r, xy[1] + math.sin(a) * r
@@ -757,7 +702,7 @@ class Bot:
                     best, bs = pk["pos"], s
         for c in obs["cubes"]:
             d = dist2(xy, c["pos"])
-            if d < P.get("loot_r", 170) and ok(c["pos"]):
+            if d < 170 and ok(c["pos"]):
                 s = d - 50
                 if s < bs:
                     best, bs = c["pos"], s
@@ -772,13 +717,13 @@ class Bot:
         if best is None:
             for c in obs["crates"]:
                 d = dist2(xy, c["pos"])
-                if 70 < d < P.get("loot_r", 200) and ok(c["pos"]):
+                if 70 < d < 200 and ok(c["pos"]):
                     if d < bs:
                         best, bs = c["pos"], d
-        if best is None and hp_frac > P.get("npc_hp", 0.6):
+        if best is None and hp_frac > 0.6:
             for n in npcs:
                 d = dist2(xy, n["pos"])
-                if 90 < d < P.get("loot_r", 200) and self.in_circle(n["pos"], obs, 15):
+                if 90 < d < 200 and self.in_circle(n["pos"], obs, 15):
                     if d < bs:
                         best, bs = n["pos"], d
         return (best[0], best[1]) if best is not None else None
