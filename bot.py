@@ -12,7 +12,7 @@ from worldmap import WorldMap
 TAU = 2 * math.pi
 
 # ---- strategy knobs (variants differ only here) ----
-VARIANT = "F"
+VARIANT = "G"
 PRESETS = {
     # balanced: chase enemies we can't see, retreat at 42%
     "A": dict(retreat_hp=0.42, crowd_retreat=True, resume_hp=0.8, no_los="chase", chase_hp=0.5,
