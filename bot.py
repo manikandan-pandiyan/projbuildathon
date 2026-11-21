@@ -10,6 +10,21 @@ import mechfight as mf
 from worldmap import WorldMap
 
 TAU = 2 * math.pi
+
+# ---- strategy knobs (variants differ only here) ----
+VARIANT = "A"
+PRESETS = {
+    # balanced: chase enemies we can't see, retreat at 42%
+    "A": dict(retreat_hp=0.42, crowd_retreat=True, resume_hp=0.8, no_los="chase", chase_hp=0.5,
+              want_gun=75, want_gun_vs_laser=55, want_laser=90, farm_hp=0.55),
+    # aggressive: fight longer, close in, ambush less
+    "B": dict(retreat_hp=0.25, crowd_retreat=False, resume_hp=0.65, no_los="chase", chase_hp=0.3,
+              want_gun=55, want_gun_vs_laser=40, want_laser=70, farm_hp=0.45),
+    # ambusher: hold still behind cover when the enemy has no line of sight, retreat early
+    "C": dict(retreat_hp=0.5, crowd_retreat=True, resume_hp=0.85, no_los="hold", chase_hp=0.7,
+              want_gun=75, want_gun_vs_laser=55, want_laser=95, farm_hp=0.6),
+}
+P = PRESETS[VARIANT]
 WEAPON_VALUE = {"laser": 3.0, "lightning": 2.6, "gun": 2.0, "mortar": 1.2}
 UPGRADE_PRIORITY = {
     "armor": 10, "plating": 9.5, "nanites": 8.5, "laser_charge": 8, "laser_damage": 7.5, "gun_rate": 7.5,
@@ -77,6 +92,10 @@ class Bot:
         self.bad_targets = {}
         self.goal_item = None
         self.prev_pos = None
+        self.hold_since = 0.0
+
+    def lob_ready(self, kinds, weapons):
+        return "mortar" in kinds and weapons[kinds.index("mortar")]["cooldown"] <= 0.3
 
     # ------------------------------------------------------------------ helpers
     def los(self, a, b):
@@ -186,10 +205,10 @@ class Bot:
         n_close = sum(1 for m in enemies if dist2(xy, m["pos"]) < 160)
         recent_hit = t - self.last_damage_t < 3
         if self.retreating:
-            if hp_frac > 0.8 or (target and dist2(xy, target["pos"]) < 28):
+            if hp_frac > P["resume_hp"] or (target and dist2(xy, target["pos"]) < 28):
                 self.retreating = False
         else:
-            if (hp_frac < 0.42 and (enemies or recent_hit)) or (n_close >= 3 and hp_frac < 0.75):
+            if (hp_frac < P["retreat_hp"] and (enemies or recent_hit)) or (P["crowd_retreat"] and n_close >= 3 and hp_frac < 0.75):
                 if not (target and target.get("hp", 1e9) < 0.5 * me["hp"] and dist2(xy, target["pos"]) < 120):
                     self.retreating = True
         zone_pt = self.safe_point(obs, xy)
@@ -223,6 +242,16 @@ class Bot:
                 zx, zy = unit(c[0] - xy[0], c[1] - xy[1])
                 goal = (xy[0] + (ux + 0.5 * zx) * 40, xy[1] + (uy + 0.5 * zy) * 40)
             boost = me["energy"] > 25 and hp_frac < 0.5
+        elif target is not None and not tlos and not self.lob_ready(kinds, weapons):
+            # we know where it is but can't shoot it
+            if P["no_los"] == "hold" and t - self.hold_since < 6:
+                self.mode = "ambush"
+                goal = None
+            elif hp_frac >= P["chase_hp"]:
+                self.mode = "chase"
+                goal = (target["pos"][0], target["pos"][1])
+            else:
+                self.mode = "ambush"
         elif target is not None:
             self.mode = "fight"
             strafe = True
@@ -232,6 +261,8 @@ class Bot:
             if goal is None:
                 goal = zone_pt or self.roam_point(obs, xy, t)
 
+        if self.mode != "ambush":
+            self.hold_since = t
         # ---- movement
         if strafe and target is not None:
             move, boost = self.fight_move(obs, me, xy, target, has, t)
@@ -317,7 +348,7 @@ class Bot:
         if enemies:
             return None
         best, bs = None, 1e18
-        if hp_frac > 0.55:
+        if hp_frac > P["farm_hp"]:
             for n in npcs:
                 d = dist2(xy, n["pos"])
                 if d < 150:
@@ -432,9 +463,9 @@ class Bot:
         if "lightning" in has and (target.get("hp", 1400) < me["hp"] * 1.3 or "laser" in ew):
             want = 28
         elif "laser" in has:
-            want = 110 if "lightning" in ew else 90
+            want = P["want_laser"] + (20 if "lightning" in ew else 0)
         elif "gun" in has:
-            want = 55 if "laser" in ew else 75
+            want = P["want_gun_vs_laser"] if "laser" in ew else P["want_gun"]
         else:
             want = 60
         if t > self.strafe_until:
