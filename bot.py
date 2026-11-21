@@ -12,7 +12,7 @@ from worldmap import WorldMap
 TAU = 2 * math.pi
 
 # ---- strategy knobs (variants differ only here) ----
-VARIANT = "O"
+VARIANT = "L"
 PRESETS = {
     # balanced: chase enemies we can't see, retreat at 42%
     "A": dict(retreat_hp=0.42, crowd_retreat=True, resume_hp=0.8, no_los="chase", chase_hp=0.5,
@@ -53,18 +53,6 @@ PRESETS = {
     "M": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
               want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True, skill=True,
               laserfix=True, lightning_first=True),
-    # L + shoot at the upper body when only that is visible
-    "N": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
-              want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True, skill=True,
-              laserfix=True, upper=True),
-    # L + close distance fast (straight in with boost, pathing around buildings) and no useless laser sidestep
-    "O": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
-              want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True, skill=True,
-              laserfix=True, fast_close=True, no_laser_dodge=True),
-    # O, but only the fast approach (keeps the laser sidestep)
-    "Q": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
-              want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True, skill=True,
-              laserfix=True, fast_close=True),
     # E + fighting skill
     "G": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
               want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True, skill=True),
@@ -180,7 +168,6 @@ class Bot:
     # ------------------------------------------------------------------ main
     def act(self, obs):
         t0 = time.perf_counter()
-        self._t0 = t0
         t = obs["t"]
         me = obs["self"]
         pos = me["pos"]
@@ -370,7 +357,7 @@ class Bot:
                 lw = weapons[kinds.index("laser")]
                 if lw.get("charge", 0) >= lw["stats"]["charge"] * 0.75:
                     p_, v_ = target["pos"], target.get("vel", [0, 0, 0])
-                    tx, ty, tz = p_[0] + v_[0] * 0.05, p_[1] + v_[1] * 0.05, p_[2] + target.get("zoff", 4.5)
+                    tx, ty, tz = p_[0] + v_[0] * 0.05, p_[1] + v_[1] * 0.05, p_[2] + 4.5
                     aim = (math.atan2(ty - muzzle[1], tx - muzzle[0]),
                            math.atan2(tz - muzzle[2], max(1e-3, math.hypot(tx - muzzle[0], ty - muzzle[1]))))
             mi = kinds.index("mortar") if "mortar" in kinds else -1
@@ -417,14 +404,6 @@ class Bot:
             d = dist2(xy, p)
             c = (p[0], p[1], p[2] + 4.5)
             l = d < 300 and self.los(muzzle, c)
-            if P.get("upper"):
-                m.pop("zoff", None)
-                if not l and d < 300:
-                    for zo in (7.0, 2.0):
-                        if self.los(muzzle, (p[0], p[1], p[2] + zo)):
-                            m["zoff"] = zo
-                            l = True
-                            break
             hp = m.get("hp", 1400)
             if P.get("skill"):
                 s = d * 1.0 + hp * P.get("focus", 0.12) + (0 if l else 250) - (40 if m["id"] == self.last_target else 0)
@@ -565,30 +544,6 @@ class Bot:
             self.strafe_until = t + self.rng.uniform(0.45, 1.3)
         ux, uy = unit(p[0] - xy[0], p[1] - xy[1])
         px, py = -uy * self.strafe_sign, ux * self.strafe_sign
-        if P.get("fast_close") and d > want + 25:
-            # close the gap: mostly straight in, small weave, boost, path around buildings
-            if self.map is not None and not self.map.walk_clear(xy, (p[0], p[1])):
-                fx, fy = self.follow(xy, (p[0], p[1]), t, self._t0)
-            else:
-                fx, fy = ux, uy
-            mx, my = fx + px * 0.3, fy + py * 0.3
-            c, r = self.zone_goal_circle(obs)
-            if dist2(xy, c) > r - 25:
-                zx, zy = unit(c[0] - xy[0], c[1] - xy[1])
-                mx += zx * 1.2
-                my += zy * 1.2
-            if P.get("skill"):
-                grab = self.fight_grab(obs, me, xy)
-                if grab is not None:
-                    gx, gy = unit(grab[0] - xy[0], grab[1] - xy[1])
-                    mx, my = mx * 0.6 + gx, my * 0.6 + gy
-            e = me["energy"]
-            if self.boosting:
-                if e < 15:
-                    self.boosting = False
-            elif e > 35:
-                self.boosting = True
-            return unit(mx, my), self.boosting
         radial = max(-1.0, min(1.0, (d - want) / 25.0))
         mx, my = px + ux * radial, py + uy * radial
         # keep inside the zone
@@ -702,7 +657,7 @@ class Bot:
     def dodge(self, obs, me, xy, enemies):
         pos = me["pos"]
         # lasers being charged at us
-        for m in ([] if P.get("no_laser_dodge") else enemies):
+        for m in enemies:
             if m.get("charging"):
                 p = m["pos"]
                 ay = m["aim"][0]
