@@ -12,7 +12,7 @@ from worldmap import WorldMap
 TAU = 2 * math.pi
 
 # ---- strategy knobs (variants differ only here) ----
-VARIANT = "C"
+VARIANT = "D"
 PRESETS = {
     # balanced: chase enemies we can't see, retreat at 42%
     "A": dict(retreat_hp=0.42, crowd_retreat=True, resume_hp=0.8, no_los="chase", chase_hp=0.5,
@@ -20,6 +20,12 @@ PRESETS = {
     # aggressive: fight longer, close in, ambush less
     "B": dict(retreat_hp=0.25, crowd_retreat=False, resume_hp=0.65, no_los="chase", chase_hp=0.3,
               want_gun=55, want_gun_vs_laser=40, want_laser=70, farm_hp=0.45),
+    # B + actively hunt: with nothing to loot, head for the last known enemy or the latest gunfire
+    "D": dict(retreat_hp=0.25, crowd_retreat=False, resume_hp=0.65, no_los="chase", chase_hp=0.3,
+              want_gun=55, want_gun_vs_laser=40, want_laser=70, farm_hp=0.45, seek=True),
+    # D + never retreat, fight even closer
+    "E": dict(retreat_hp=0.0, crowd_retreat=False, resume_hp=0.5, no_los="chase", chase_hp=0.0,
+              want_gun=40, want_gun_vs_laser=30, want_laser=60, farm_hp=0.4, seek=True),
     # ambusher: hold still behind cover when the enemy has no line of sight, retreat early
     "C": dict(retreat_hp=0.5, crowd_retreat=True, resume_hp=0.85, no_los="hold", chase_hp=0.7,
               want_gun=75, want_gun_vs_laser=55, want_laser=95, farm_hp=0.6),
@@ -258,6 +264,10 @@ class Bot:
         else:
             self.mode = "roam"
             goal = self.pick_loot_goal(obs, xy, me, kinds, hp_frac, t, npcs)
+            if goal is None and zone_pt is None and P.get("seek"):
+                goal = self.seek_point(obs, xy, t)
+                if goal is not None:
+                    self.mode = "seek"
             if goal is None:
                 goal = zone_pt or self.roam_point(obs, xy, t)
 
@@ -681,6 +691,19 @@ class Bot:
                     if d < bs:
                         best, bs = n["pos"], d
         return (best[0], best[1]) if best is not None else None
+
+    def seek_point(self, obs, xy, t):
+        best, bt = None, 1e9
+        for k, v in self.known.items():
+            if t - v["t"] < bt:
+                best, bt = v["pos"], t - v["t"]
+        if best is not None and bt < 12 and self.in_circle(best, obs, 10):
+            return (best[0], best[1])
+        if self.sound_bearing is not None and t - self.sound_t < 4:
+            p = (xy[0] + math.cos(self.sound_bearing) * 70, xy[1] + math.sin(self.sound_bearing) * 70)
+            if self.in_circle(p, obs, 10):
+                return p
+        return None
 
     def roam_point(self, obs, xy, t):
         c, r = self.zone_goal_circle(obs)
